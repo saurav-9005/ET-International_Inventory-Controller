@@ -93,7 +93,7 @@ async function getAllVariantsWithInventory() {
   let cursor: string | null = null;
 
   while (true) {
-    const data = await shopifyGraphQL<Resp>(query, { cursor });
+    const data: Resp = await shopifyGraphQL<Resp>(query, { cursor });
     const { edges, pageInfo } = data.productVariants;
     allVariants.push(...edges.map((e) => e.node));
     if (!pageInfo.hasNextPage) break;
