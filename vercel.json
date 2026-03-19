@@ -1,0 +1,8 @@
+{
+  "crons": [
+    {
+      "path": "/api/shopify/reconcile-cls",
+      "schedule": "0 * * * *"
+    }
+  ]
+}
