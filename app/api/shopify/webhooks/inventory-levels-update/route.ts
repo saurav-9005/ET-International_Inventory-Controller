@@ -1,26 +1,85 @@
-import { NextRequest } from "next/server";
+import crypto from "node:crypto";
+import { URLSearchParams } from "node:url";
 
 const SHOP = process.env.SHOPIFY_SHOP_DOMAIN!;
-const TOKEN = process.env.SHOPIFY_ADMIN_ACCESS_TOKEN!;
+const CLIENT_ID = process.env.SHOPIFY_CLIENT_ID!;
+const CLIENT_SECRET = process.env.SHOPIFY_CLIENT_SECRET!;
 const API_VERSION = process.env.SHOPIFY_API_VERSION || "2025-10";
 const CLS_LOCATION_ID = process.env.SHOPIFY_CLS_LOCATION_ID!;
-const RECONCILE_SECRET = process.env.RECONCILE_SECRET!;
+
+// Token cache
+let cachedToken: string | null = null;
+let tokenExpiresAt = 0;
+
+type InventoryWebhookPayload = {
+  inventory_item_id: number;
+  location_id: number;
+  available?: number | null;
+};
+
+// ─── Auth ─────────────────────────────────────────────────────────────────────
+
+async function getAccessToken(): Promise<string> {
+  if (cachedToken && Date.now() < tokenExpiresAt - 60_000) {
+    return cachedToken;
+  }
+
+  const res = await fetch(
+    `https://${SHOP}/admin/oauth/access_token`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        grant_type: "client_credentials",
+        client_id: CLIENT_ID,
+        client_secret: CLIENT_SECRET,
+      }),
+    }
+  );
+
+  if (!res.ok) throw new Error(`Token request failed: ${res.status}`);
+
+  const { access_token, expires_in } = await res.json();
+  cachedToken = access_token;
+  tokenExpiresAt = Date.now() + expires_in * 1000;
+
+  return cachedToken!;
+}
+
+// ─── Webhook verification ─────────────────────────────────────────────────────
+
+function verifyWebhook(rawBody: string, hmacHeader: string | null): boolean {
+  if (!hmacHeader) return false;
+  const digest = crypto
+    .createHmac("sha256", CLIENT_SECRET)
+    .update(rawBody, "utf8")
+    .digest("base64");
+  const a = Buffer.from(digest);
+  const b = Buffer.from(hmacHeader);
+  if (a.length !== b.length) return false;
+  return crypto.timingSafeEqual(a, b);
+}
+
+// ─── GraphQL ──────────────────────────────────────────────────────────────────
 
 async function shopifyGraphQL<T>(
   query: string,
   variables?: Record<string, unknown>
 ): Promise<T> {
+  const token = await getAccessToken();
+
   const res = await fetch(
     `https://${SHOP}/admin/api/${API_VERSION}/graphql.json`,
     {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "X-Shopify-Access-Token": TOKEN,
+        "X-Shopify-Access-Token": token,
       },
       body: JSON.stringify({ query, variables }),
     }
   );
+
   const json = await res.json();
   if (!res.ok || json.errors) {
     throw new Error(JSON.stringify(json, null, 2));
@@ -28,80 +87,48 @@ async function shopifyGraphQL<T>(
   return json.data as T;
 }
 
-async function getAllVariantsWithInventory() {
+// ─── Variant lookup ───────────────────────────────────────────────────────────
+
+async function getVariantByInventoryItemId(inventoryItemId: number) {
   type Resp = {
     productVariants: {
       edges: Array<{
         node: {
           id: string;
           title: string;
-          inventoryItem: {
-            id: string;
-            inventoryLevels: {
-              edges: Array<{
-                node: {
-                  location: { id: string };
-                  quantities: Array<{
-                    name: string;
-                    quantity: number;
-                  }>;
-                };
-              }>;
-            };
-          };
+          product: { status: string };
         };
       }>;
-      pageInfo: {
-        hasNextPage: boolean;
-        endCursor: string;
-      };
     };
   };
 
-  const query = `
-    query GetVariants($cursor: String) {
-      productVariants(first: 50, after: $cursor) {
+  const data = await shopifyGraphQL<Resp>(
+    `query GetVariant($q: String!) {
+      productVariants(first: 1, query: $q) {
         edges {
           node {
             id
             title
-            inventoryItem {
-              id
-              inventoryLevels(first: 10) {
-                edges {
-                  node {
-                    location { id }
-                    quantities(names: ["available"]) {
-                      name
-                      quantity
-                    }
-                  }
-                }
-              }
+            product {
+              status
             }
           }
         }
-        pageInfo {
-          hasNextPage
-          endCursor
-        }
       }
-    }
-  `;
+    }`,
+    { q: `inventory_item_id:${inventoryItemId}` }
+  );
 
-  const allVariants = [];
-  let cursor: string | null = null;
+  const variant = data.productVariants.edges[0]?.node;
 
-  while (true) {
-    const data: Resp = await shopifyGraphQL<Resp>(query, { cursor });
-    const { edges, pageInfo } = data.productVariants;
-    allVariants.push(...edges.map((e) => e.node));
-    if (!pageInfo.hasNextPage) break;
-    cursor = pageInfo.endCursor;
+  if (!variant || variant.product.status !== "ACTIVE") {
+    return null;
   }
 
-  return allVariants;
+  return variant;
 }
+
+// ─── Metafield update ─────────────────────────────────────────────────────────
 
 async function setClsQtyMetafield(variantId: string, value: string) {
   type Resp = {
@@ -138,48 +165,47 @@ async function setClsQtyMetafield(variantId: string, value: string) {
   return data.metafieldsSet.metafields[0];
 }
 
-export async function GET(request: NextRequest) {
-  // Protect the route with a secret so it can't be triggered publicly
-  const secret = request.nextUrl.searchParams.get("secret");
-  if (secret !== RECONCILE_SECRET) {
-    return new Response("Unauthorized", { status: 401 });
-  }
+// ─── POST handler ─────────────────────────────────────────────────────────────
 
+export async function POST(request: Request) {
   try {
-    const clsGid = `gid://shopify/Location/${CLS_LOCATION_ID}`;
-    const variants = await getAllVariantsWithInventory();
+    const rawBody = await request.text();
+    const hmacHeader = request.headers.get("x-shopify-hmac-sha256");
 
-    const results = { updated: 0, skipped: 0, errors: 0 };
-
-    for (const variant of variants) {
-      try {
-        const clsLevel = variant.inventoryItem.inventoryLevels.edges.find(
-          (e) => e.node.location.id === clsGid
-        );
-
-        // No CLS inventory level found for this variant — skip
-        if (!clsLevel) {
-          results.skipped++;
-          continue;
-        }
-
-        const available =
-          clsLevel.node.quantities.find((q) => q.name === "available")
-            ?.quantity ?? 0;
-
-        const value = available === 0 ? "outofstock" : "instock";
-        await setClsQtyMetafield(variant.id, value);
-        results.updated++;
-      } catch (err) {
-        console.error("Error updating variant:", variant.id, err);
-        results.errors++;
-      }
+    if (!verifyWebhook(rawBody, hmacHeader)) {
+      console.error("Invalid webhook signature");
+      return new Response("Unauthorized", { status: 401 });
     }
 
-    console.log("Reconciliation complete:", results);
-    return Response.json({ ok: true, results });
+    const payload = JSON.parse(rawBody) as InventoryWebhookPayload;
+    const locationId = String(payload.location_id);
+    const inventoryItemId = payload.inventory_item_id;
+    const available = Number(payload.available ?? 0);
+
+    console.log("Webhook received:", { locationId, inventoryItemId, available });
+
+    if (locationId !== String(CLS_LOCATION_ID)) {
+      console.log("Ignored — not CLS location:", locationId);
+      return new Response("Ignored non-CLS location", { status: 200 });
+    }
+
+    if (available !== 0) {
+      console.log("Ignored — inventory not zero:", available);
+      return new Response("Ignored non-zero inventory", { status: 200 });
+    }
+
+    const variant = await getVariantByInventoryItemId(inventoryItemId);
+    if (!variant) {
+      console.log("Skipped — variant not found or product not active:", inventoryItemId);
+      return new Response("Variant not found or product not active", { status: 200 });
+    }
+
+    const metafield = await setClsQtyMetafield(variant.id, "outofstock-international");
+    console.log("Updated metafield:", metafield);
+
+    return new Response("CLS metafield updated", { status: 200 });
   } catch (error) {
-    console.error("Reconciliation error:", error);
+    console.error("Webhook error:", error);
     return new Response("Server error", { status: 500 });
   }
 }
