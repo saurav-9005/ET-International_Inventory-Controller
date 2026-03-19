@@ -4,6 +4,7 @@ import { URLSearchParams } from "node:url";
 const SHOP = process.env.SHOPIFY_SHOP_DOMAIN!;
 const CLIENT_ID = process.env.SHOPIFY_CLIENT_ID!;
 const CLIENT_SECRET = process.env.SHOPIFY_CLIENT_SECRET!;
+const WEBHOOK_SECRET = process.env.SHOPIFY_WEBHOOK_SECRET!;
 const API_VERSION = process.env.SHOPIFY_API_VERSION || "2025-10";
 const CLS_LOCATION_ID = process.env.SHOPIFY_CLS_LOCATION_ID!;
 
@@ -51,7 +52,7 @@ async function getAccessToken(): Promise<string> {
 function verifyWebhook(rawBody: string, hmacHeader: string | null): boolean {
   if (!hmacHeader) return false;
   const digest = crypto
-    .createHmac("sha256", CLIENT_SECRET)
+    .createHmac("sha256", WEBHOOK_SECRET)
     .update(rawBody, "utf8")
     .digest("base64");
   const a = Buffer.from(digest);
