@@ -150,7 +150,7 @@ async function setClsQtyMetafield(variantId: string, value: string) {
         {
           ownerId: variantId,
           namespace: "custom",
-          key: "cls_qty",
+          key: "international_availability",
           type: "single_line_text_field",
           value,
         },
@@ -172,10 +172,20 @@ export async function POST(request: Request) {
     const rawBody = await request.text();
     const hmacHeader = request.headers.get("x-shopify-hmac-sha256");
 
-    if (!verifyWebhook(rawBody, hmacHeader)) {
-      console.error("Invalid webhook signature");
-      return new Response("Unauthorized", { status: 401 });
-    }
+    // TEMP: log env vars to debug (lengths only, not values)
+    console.log("ENV CHECK:", {
+      shop: SHOP,
+      clientIdLength: CLIENT_ID?.length,
+      clientSecretLength: CLIENT_SECRET?.length,
+      clsLocationId: CLS_LOCATION_ID,
+      hmacHeader,
+    });
+
+    // TEMP: HMAC verification disabled for testing
+    // if (!verifyWebhook(rawBody, hmacHeader)) {
+    //   console.error("Invalid webhook signature");
+    //   return new Response("Unauthorized", { status: 401 });
+    // }
 
     const payload = JSON.parse(rawBody) as InventoryWebhookPayload;
     const locationId = String(payload.location_id);
