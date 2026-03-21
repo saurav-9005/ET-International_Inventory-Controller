@@ -47,20 +47,10 @@ async function getAccessToken(): Promise<string> {
 
 function verifyWebhook(rawBody: string, hmacHeader: string | null): boolean {
   if (!hmacHeader) return false;
-
-  // TEMP: log computed vs received to diagnose mismatch
   const digest = crypto
     .createHmac("sha256", CLIENT_SECRET)
     .update(rawBody, "utf8")
     .digest("base64");
-
-  console.log("HMAC DEBUG:", {
-    received: hmacHeader,
-    computed: digest,
-    match: digest === hmacHeader,
-    secretPrefix: CLIENT_SECRET?.substring(0, 10),
-  });
-
   const a = Buffer.from(digest);
   const b = Buffer.from(hmacHeader);
   if (a.length !== b.length) return false;
@@ -119,7 +109,9 @@ async function getVariantByInventoryItemId(inventoryItemId: number) {
     { q: `inventory_item_id:${inventoryItemId}` }
   );
 
-  return data.productVariants.edges[0]?.node || null;
+  const variant = data.productVariants.edges[0]?.node || null;
+  console.log("Found variant:", variant); // ← temp debug
+  return variant;
 }
 
 // ─── Metafield update ─────────────────────────────────────────────────────────
