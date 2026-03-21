@@ -17,6 +17,15 @@ type InventoryWebhookPayload = {
   available?: number | null;
 };
 
+export async function POST(request: Request) {
+  console.log("ENV CHECK:", {
+    shop: SHOP,
+    clientIdLength: CLIENT_ID?.length,
+    clientSecretLength: CLIENT_SECRET?.length,
+    clsLocationId: CLS_LOCATION_ID,
+  });
+  // ... rest of your code
+
 // ─── Auth ─────────────────────────────────────────────────────────────────────
 
 async function getAccessToken(): Promise<string> {
