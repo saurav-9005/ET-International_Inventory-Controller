@@ -1,5 +1,5 @@
-import crypto from "node:crypto";
 import { URLSearchParams } from "node:url";
+import crypto from "node:crypto";
 
 const SHOP = process.env.SHOPIFY_SHOP_DOMAIN!;
 const CLIENT_ID = process.env.SHOPIFY_CLIENT_ID!;
@@ -24,27 +24,15 @@ async function getAccessToken(): Promise<string> {
     return cachedToken;
   }
 
-  // TEMP: debug
-  console.log("TOKEN REQUEST:", {
-    shop: SHOP,
-    clientIdLength: CLIENT_ID?.length,
-    clientIdPrefix: CLIENT_ID?.substring(0, 6),
-    clientSecretLength: CLIENT_SECRET?.length,
-    clientSecretPrefix: CLIENT_SECRET?.substring(0, 8),
+  const res = await fetch(`https://${SHOP}/admin/oauth/access_token`, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      grant_type: "client_credentials",
+      client_id: CLIENT_ID,
+      client_secret: CLIENT_SECRET,
+    }),
   });
-
-  const res = await fetch(
-    `https://${SHOP}/admin/oauth/access_token`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({
-        grant_type: "client_credentials",
-        client_id: CLIENT_ID,
-        client_secret: CLIENT_SECRET,
-      }),
-    }
-  );
 
   if (!res.ok) throw new Error(`Token request failed: ${res.status}`);
 
@@ -102,11 +90,7 @@ async function getVariantByInventoryItemId(inventoryItemId: number) {
   type Resp = {
     productVariants: {
       edges: Array<{
-        node: {
-          id: string;
-          title: string;
-          product: { status: string };
-        };
+        node: { id: string; title: string };
       }>;
     };
   };
@@ -118,9 +102,6 @@ async function getVariantByInventoryItemId(inventoryItemId: number) {
           node {
             id
             title
-            product {
-              status
-            }
           }
         }
       }
@@ -128,18 +109,12 @@ async function getVariantByInventoryItemId(inventoryItemId: number) {
     { q: `inventory_item_id:${inventoryItemId}` }
   );
 
-  const variant = data.productVariants.edges[0]?.node;
-
-  if (!variant || variant.product.status !== "ACTIVE") {
-    return null;
-  }
-
-  return variant;
+  return data.productVariants.edges[0]?.node || null;
 }
 
 // ─── Metafield update ─────────────────────────────────────────────────────────
 
-async function setClsQtyMetafield(variantId: string, value: string) {
+async function setInternationalAvailability(variantId: string, value: string) {
   type Resp = {
     metafieldsSet: {
       metafields: Array<{ id: string; value: string }>;
@@ -181,20 +156,10 @@ export async function POST(request: Request) {
     const rawBody = await request.text();
     const hmacHeader = request.headers.get("x-shopify-hmac-sha256");
 
-    // TEMP: log env vars to debug (lengths only, not values)
-    console.log("ENV CHECK:", {
-      shop: SHOP,
-      clientIdLength: CLIENT_ID?.length,
-      clientSecretLength: CLIENT_SECRET?.length,
-      clsLocationId: CLS_LOCATION_ID,
-      hmacHeader,
-    });
-
-    // TEMP: HMAC verification disabled for testing
-    // if (!verifyWebhook(rawBody, hmacHeader)) {
-    //   console.error("Invalid webhook signature");
-    //   return new Response("Unauthorized", { status: 401 });
-    // }
+    if (!verifyWebhook(rawBody, hmacHeader)) {
+      console.error("Invalid webhook signature");
+      return new Response("Unauthorized", { status: 401 });
+    }
 
     const payload = JSON.parse(rawBody) as InventoryWebhookPayload;
     const locationId = String(payload.location_id);
@@ -215,11 +180,11 @@ export async function POST(request: Request) {
 
     const variant = await getVariantByInventoryItemId(inventoryItemId);
     if (!variant) {
-      console.log("Skipped — variant not found or product not active:", inventoryItemId);
-      return new Response("Variant not found or product not active", { status: 200 });
+      console.log("Skipped — variant not found:", inventoryItemId);
+      return new Response("Variant not found", { status: 200 });
     }
 
-    const metafield = await setClsQtyMetafield(variant.id, "outofstock-international");
+    const metafield = await setInternationalAvailability(variant.id, "outofstock-international");
     console.log("Updated metafield:", metafield);
 
     return new Response("CLS metafield updated", { status: 200 });
