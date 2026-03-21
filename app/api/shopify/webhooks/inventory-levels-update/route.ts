@@ -47,10 +47,20 @@ async function getAccessToken(): Promise<string> {
 
 function verifyWebhook(rawBody: string, hmacHeader: string | null): boolean {
   if (!hmacHeader) return false;
+
+  // TEMP: log computed vs received to diagnose mismatch
   const digest = crypto
     .createHmac("sha256", CLIENT_SECRET)
     .update(rawBody, "utf8")
     .digest("base64");
+
+  console.log("HMAC DEBUG:", {
+    received: hmacHeader,
+    computed: digest,
+    match: digest === hmacHeader,
+    secretPrefix: CLIENT_SECRET?.substring(0, 10),
+  });
+
   const a = Buffer.from(digest);
   const b = Buffer.from(hmacHeader);
   if (a.length !== b.length) return false;
