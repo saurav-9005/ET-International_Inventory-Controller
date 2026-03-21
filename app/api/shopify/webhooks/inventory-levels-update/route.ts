@@ -24,6 +24,15 @@ async function getAccessToken(): Promise<string> {
     return cachedToken;
   }
 
+  // TEMP: debug
+  console.log("TOKEN REQUEST:", {
+    shop: SHOP,
+    clientIdLength: CLIENT_ID?.length,
+    clientIdPrefix: CLIENT_ID?.substring(0, 6),
+    clientSecretLength: CLIENT_SECRET?.length,
+    clientSecretPrefix: CLIENT_SECRET?.substring(0, 8),
+  });
+
   const res = await fetch(
     `https://${SHOP}/admin/oauth/access_token`,
     {
