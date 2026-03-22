@@ -88,29 +88,25 @@ async function shopifyGraphQL<T>(
 
 async function getVariantByInventoryItemId(inventoryItemId: number) {
   type Resp = {
-    productVariants: {
-      edges: Array<{
-        node: { id: string; title: string };
-      }>;
-    };
+    inventoryItem: {
+      variant: { id: string; title: string } | null;
+    } | null;
   };
 
   const data = await shopifyGraphQL<Resp>(
-    `query GetVariant($q: String!) {
-      productVariants(first: 1, query: $q) {
-        edges {
-          node {
-            id
-            title
-          }
+    `query GetVariant($inventoryItemId: ID!) {
+      inventoryItem(id: $inventoryItemId) {
+        variant {
+          id
+          title
         }
       }
     }`,
-    { q: `inventory_item_id:${inventoryItemId}` }
+    { inventoryItemId: `gid://shopify/InventoryItem/${inventoryItemId}` }
   );
 
-  const variant = data.productVariants.edges[0]?.node || null;
-  console.log("Found variant:", variant); // ← temp debug
+  const variant = data.inventoryItem?.variant || null;
+  console.log("Found variant:", variant);
   return variant;
 }
 
